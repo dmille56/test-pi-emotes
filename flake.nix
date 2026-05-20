@@ -7,7 +7,7 @@
 
   outputs = { self, nixpkgs }: let
     pkgs = nixpkgs.legacyPackages.x86_64-linux;
-    py = pkgs.python312.withPackages (ps: [ ps.openai ]);
+    py = pkgs.python312.withPackages (ps: [ ps.openai ps.pillow ps.numpy ]);
     genScript = pkgs.writeShellApplication {
       name = "generate-emotes";
       runtimeInputs = [ py pkgs.imagemagick ];

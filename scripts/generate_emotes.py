@@ -43,6 +43,18 @@ def save_b64_png(b64_json: str, out_path: str) -> None:
         f.write(base64.b64decode(b64_json))
 
 
+def _parse_fuzz_percent(fuzz: str) -> int:
+    """Parse fuzz like '8%' into an integer threshold in 0..255."""
+    s = fuzz.strip()
+    if s.endswith("%"):
+        val = float(s[:-1])
+    else:
+        # Allow raw percentage without % (treated as percent).
+        val = float(s)
+    val = max(0.0, min(100.0, val))
+    return int(round(255.0 * (val / 100.0)))
+
+
 def _sample_corner_rgb(in_path: str) -> tuple[int, int, int]:
     """Sample top-left pixel color in sRGB from ImageMagick (e.g. srgb(231,232,231))."""
     # Using -format keeps output stable.
@@ -54,27 +66,53 @@ def _sample_corner_rgb(in_path: str) -> tuple[int, int, int]:
         "info:",
     ]
     out = subprocess.check_output(cmd, text=True).strip()
+
+    # ImageMagick may return either:
+    # - srgb(r,g,b)
+    # - srgba(r,g,b,a)
     m = re.match(r"^srgb\((\d+),(\d+),(\d+)\)$", out)
-    if not m:
-        raise RuntimeError(f"Unexpected corner pixel format: {out!r}")
-    r, g, b = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    return (r, g, b)
+    if m:
+        r, g, b = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return (r, g, b)
+
+    m = re.match(r"^srgba\((\d+),(\d+),(\d+),[0-9.]+\)$", out)
+    if m:
+        r, g, b = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return (r, g, b)
+
+    raise RuntimeError(f"Unexpected corner pixel format: {out!r}")
 
 
-def remove_background_with_magick(in_path: str, *, fuzz: str = "8%") -> None:
-    """Convert solid/near-solid background to transparency using a sampled corner color.
+def remove_background(in_path: str, *, fuzz: str = "8%") -> None:
+    """Remove solid-ish background by sampling the corner pixel.
 
-    This is a pragmatic sprite-friendly approach when the API can't output real transparency.
+    Prefer a reliable PIL+NumPy implementation. Fall back to ImageMagick if PIL
+    isn't available.
     """
-    r, g, b = _sample_corner_rgb(in_path)
-    rgb = f"rgb({r},{g},{b})"
+    bg_r, bg_g, bg_b = _sample_corner_rgb(in_path)
+    thresh = _parse_fuzz_percent(fuzz)
 
+    try:
+        import numpy as np  # type: ignore
+        from PIL import Image  # type: ignore
+
+        im = Image.open(in_path).convert("RGBA")
+        arr = np.array(im)
+        rgb = arr[:, :, :3].astype(np.int16)
+        bg = np.array([bg_r, bg_g, bg_b], dtype=np.int16)
+        # L1 distance from background color.
+        dist = np.abs(rgb - bg).sum(axis=2)
+        mask = dist <= (thresh * 3)
+        arr[:, :, 3][mask] = 0
+        out = Image.fromarray(arr, mode="RGBA")
+        out.save(in_path)
+        return
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] PIL bg-removal failed for {in_path}: {e}; falling back to ImageMagick")
+
+    # Fallback: pragmatically use ImageMagick.
+    rgb = f"rgb({bg_r},{bg_g},{bg_b})"
     tmp_path = in_path + ".bgrem.png"
-
-    # Steps:
-    # - ensure alpha exists
-    # - set any pixel matching the sampled background color (within fuzz) to transparent
-    # - write to a temp file, then replace
     cmd = [
         MAGICK_BIN,
         in_path,
@@ -181,8 +219,9 @@ def main():
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--limit", type=int, default=0, help="Generate only the first N frames (sorted by path) for testing.")
 
-    # Post-processing: background removal when API doesn't support transparency.
-    parser.add_argument("--remove-bg", action="store_true", help="Remove solid background locally via ImageMagick and write real transparent PNGs.")
+    # Post-processing: background removal when API can't output transparency.
+    parser.add_argument("--remove-bg", action="store_true", help="After generating, remove solid background locally via ImageMagick (writes transparent PNGs).")
+    parser.add_argument("--remove-bg-only", action="store_true", help="Skip generation; only run local bg removal on existing PNGs under --output.")
     parser.add_argument("--bg-fuzz", type=str, default="8%", help="Fuzz for bg removal, e.g. 5%% or 12%%.")
 
     args = parser.parse_args()
@@ -193,6 +232,24 @@ def main():
 
     out_root = args.output
     os.makedirs(out_root, exist_ok=True)
+
+    # If requested, do only local background removal.
+    if args.remove_bg_only:
+        # Ensure output exists.
+        if not os.path.isdir(out_root):
+            raise SystemExit(f"Missing --output directory: {out_root}")
+
+        print(f"[info] bg-removal-only: scanning for PNGs under {out_root}")
+        for dirpath, _dirnames, filenames in os.walk(out_root):
+            for fn in sorted(filenames):
+                if not fn.lower().endswith('.png'):
+                    continue
+                p = os.path.join(dirpath, fn)
+                print(f"[post] {os.path.relpath(p, out_root)}")
+                remove_background(p, fuzz=args.bg_fuzz)
+
+        print("[done] bg-removal-only complete")
+        return
 
     manifest = build_manifest(include_compact=args.include_compact)
     items = sorted(manifest.items(), key=lambda kv: kv[0])
@@ -250,7 +307,7 @@ def main():
 
         if args.remove_bg:
             try:
-                remove_background_with_magick(out_path, fuzz=args.bg_fuzz)
+                remove_background(out_path, fuzz=args.bg_fuzz)
             except Exception as e:  # noqa: BLE001
                 # If bg removal fails, keep the opaque frame so the pipeline doesn't block.
                 print(f"[warn] bg removal failed for {rel_path}: {e}. Keeping original output.")
