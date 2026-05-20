@@ -1,0 +1,26 @@
+# pi local state / cache
+.pi/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Nix
+result-
+result
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.tmp
+*.swp
+*.swo
