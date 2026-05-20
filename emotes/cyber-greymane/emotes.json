@@ -9,10 +9,10 @@
   },
   "talk": {
     "weights": {
-      "talk_close.png": 1,
-      "talk_small.png": 4,
-      "talk_mid.png": 3,
-      "talk_wide.png": 2
+      "talk_close.png": 0.15,
+      "talk_small.png": 0.3,
+      "talk_mid.png": 0.35,
+      "talk_wide.png": 0.2
     }
   }
 }
