@@ -1,0 +1,14 @@
+{
+  "emotes": [
+    {
+      "emote-set": "cyber-greymane",
+      "model": "*"
+    }
+  ],
+  "terminals": [
+    {
+      "match": "tmux",
+      "render": "auto"
+    }
+  ]
+}
