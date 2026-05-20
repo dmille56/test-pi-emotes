@@ -56,8 +56,7 @@ def _parse_fuzz_percent(fuzz: str) -> int:
 
 
 def _sample_corner_rgb(in_path: str) -> tuple[int, int, int]:
-    """Sample top-left pixel color in sRGB from ImageMagick (e.g. srgb(231,232,231))."""
-    # Using -format keeps output stable.
+    """Sample a representative background color from the top-left pixel."""
     cmd = [
         MAGICK_BIN,
         in_path,
@@ -67,20 +66,38 @@ def _sample_corner_rgb(in_path: str) -> tuple[int, int, int]:
     ]
     out = subprocess.check_output(cmd, text=True).strip()
 
-    # ImageMagick may return either:
-    # - srgb(r,g,b)
-    # - srgba(r,g,b,a)
     m = re.match(r"^srgb\((\d+),(\d+),(\d+)\)$", out)
     if m:
-        r, g, b = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        return (r, g, b)
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
     m = re.match(r"^srgba\((\d+),(\d+),(\d+),[0-9.]+\)$", out)
     if m:
-        r, g, b = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        return (r, g, b)
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
     raise RuntimeError(f"Unexpected corner pixel format: {out!r}")
+
+
+def cutoff_low_alpha(in_path: str, *, cutoff: int = 20) -> None:
+    """Force near-transparent pixels to be fully transparent.
+
+    Some sprites end up with tiny alpha values over the background that can
+    appear as grey/black depending on the terminal background.
+    """
+    try:
+        import numpy as np  # type: ignore
+        from PIL import Image  # type: ignore
+
+        im = Image.open(in_path).convert("RGBA")
+        arr = np.array(im)
+        a = arr[:, :, 3]
+        mask = a <= int(cutoff)
+        arr[:, :, 3][mask] = 0
+        arr[:, :, :3][mask] = 0
+        out = Image.fromarray(arr, mode="RGBA")
+        out.save(in_path)
+    except Exception as e:  # noqa: BLE001
+        # If PIL isn't available, do nothing.
+        print(f"[warn] cutoff_low_alpha failed for {in_path}: {e}")
 
 
 def remove_background(in_path: str, *, fuzz: str = "8%") -> None:
@@ -89,6 +106,7 @@ def remove_background(in_path: str, *, fuzz: str = "8%") -> None:
     Prefer a reliable PIL+NumPy implementation. Fall back to ImageMagick if PIL
     isn't available.
     """
+    # Initial fallback bg color (used only if PIL/NumPy is unavailable).
     bg_r, bg_g, bg_b = _sample_corner_rgb(in_path)
     thresh = _parse_fuzz_percent(fuzz)
 
@@ -98,12 +116,28 @@ def remove_background(in_path: str, *, fuzz: str = "8%") -> None:
 
         im = Image.open(in_path).convert("RGBA")
         arr = np.array(im)
+        h, w = arr.shape[0], arr.shape[1]
         rgb = arr[:, :, :3].astype(np.int16)
-        bg = np.array([bg_r, bg_g, bg_b], dtype=np.int16)
+
+        # Sample multiple corners; use the median to reduce per-frame variance
+        # (some frames may have slightly different near-background colors).
+        corners = np.array([
+            arr[0, 0, :3],
+            arr[0, w - 1, :3],
+            arr[h - 1, 0, :3],
+            arr[h - 1, w - 1, :3],
+        ], dtype=np.int16)
+        bg = np.median(corners, axis=0).astype(np.int16)
+
         # L1 distance from background color.
         dist = np.abs(rgb - bg).sum(axis=2)
         mask = dist <= (thresh * 3)
+
+        # Fully transparent pixels: zero alpha AND clear RGB to avoid fringe
+        # artifacts even if a renderer doesn't perfectly ignore RGB under alpha==0.
         arr[:, :, 3][mask] = 0
+        arr[:, :, :3][mask] = 0
+
         out = Image.fromarray(arr, mode="RGBA")
         out.save(in_path)
         return
@@ -223,6 +257,7 @@ def main():
     parser.add_argument("--remove-bg", action="store_true", help="After generating, remove solid background locally via ImageMagick (writes transparent PNGs).")
     parser.add_argument("--remove-bg-only", action="store_true", help="Skip generation; only run local bg removal on existing PNGs under --output.")
     parser.add_argument("--bg-fuzz", type=str, default="8%", help="Fuzz for bg removal, e.g. 5%% or 12%%.")
+    parser.add_argument("--alpha-cutoff", type=int, default=0, help="After bg removal, set pixels with alpha<=cutoff to alpha=0. Use e.g. 20 to remove faint grey remnants.")
 
     args = parser.parse_args()
 
@@ -247,6 +282,8 @@ def main():
                 p = os.path.join(dirpath, fn)
                 print(f"[post] {os.path.relpath(p, out_root)}")
                 remove_background(p, fuzz=args.bg_fuzz)
+                if args.alpha_cutoff and args.alpha_cutoff > 0:
+                    cutoff_low_alpha(p, cutoff=args.alpha_cutoff)
 
         print("[done] bg-removal-only complete")
         return
