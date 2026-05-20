@@ -23,7 +23,7 @@ Other folders (need ≥1 `*.png` each):
 
 ### Generation settings
 - `model`: `gpt-image-2`
-- `size`: `1024x1024` (square)
+- `size`: `128x128` (square)
 - `quality`: start with `"high"` for the master
 - `background`: try `"transparent"` if supported for your API/model configuration
   - If transparency fails or looks wrong, generate opaque then remove background locally later.

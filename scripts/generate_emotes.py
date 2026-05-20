@@ -11,7 +11,7 @@ import re
 
 
 DEFAULT_MODEL = "gpt-image-2"
-DEFAULT_SIZE = "1024x1024"
+DEFAULT_SIZE = "128x128"
 DEFAULT_QUALITY = "high"
 DEFAULT_BACKGROUND = "opaque"
 
