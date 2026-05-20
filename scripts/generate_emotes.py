@@ -119,15 +119,27 @@ def remove_background(in_path: str, *, fuzz: str = "8%") -> None:
         h, w = arr.shape[0], arr.shape[1]
         rgb = arr[:, :, :3].astype(np.int16)
 
-        # Sample multiple corners; use the median to reduce per-frame variance
-        # (some frames may have slightly different near-background colors).
-        corners = np.array([
-            arr[0, 0, :3],
-            arr[0, w - 1, :3],
-            arr[h - 1, 0, :3],
-            arr[h - 1, w - 1, :3],
-        ], dtype=np.int16)
-        bg = np.median(corners, axis=0).astype(np.int16)
+        # Sample multiple corners and estimate the background color.
+        # Important: some corners may already be fully transparent (alpha=0)
+        # but still have RGB set to arbitrary values (often 0). We must ignore
+        # those transparent corners when computing the background color.
+        corner_coords = [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]
+        corner_rgbs = []
+        corner_alphas = []
+        for (yy, xx) in corner_coords:
+            corner_rgbs.append(arr[yy, xx, :3])
+            corner_alphas.append(arr[yy, xx, 3])
+        corner_rgbs = np.array(corner_rgbs, dtype=np.int16)
+        corner_alphas = np.array(corner_alphas, dtype=np.int16)
+
+        # Use corners with some alpha signal as color reference.
+        # If all corners are alpha=0 (rare after our earlier passes), fall back
+        # to using all corners.
+        valid = corner_alphas > 0
+        if valid.any():
+            bg = np.median(corner_rgbs[valid], axis=0).astype(np.int16)
+        else:
+            bg = np.median(corner_rgbs, axis=0).astype(np.int16)
 
         # L1 distance from background color.
         dist = np.abs(rgb - bg).sum(axis=2)
